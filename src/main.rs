@@ -1,169 +1,110 @@
 use std::env;
-use std::io;
-use std::iter::zip;
+use std::io::{self};
 use std::process;
 
-struct CustomIterator<'a> {
-    remaining: &'a str,
+pub struct Regex<'a> {
+    pattern: &'a str,
 }
 
-impl<'a> CustomIterator<'a> {
-    fn new(s: &'a str) -> Self {
-        CustomIterator { remaining: s }
+impl<'a> Regex<'a> {
+    pub fn new(pattern: &'a str) -> Self {
+        Regex { pattern }
     }
-}
 
-impl<'a> Iterator for CustomIterator<'a> {
-    type Item = &'a str;
+    pub fn is_match(&self, text: &str) -> bool {
+        self.match_regex(self.pattern, text)
+    }
 
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.remaining.is_empty() {
-            return None;
-        }
-
-        if self.remaining.starts_with("\\") {
-            let (token, rest) = self.remaining.split_at(2);
-            self.remaining = rest;
-            Some(token)
+    fn match_regex(&self, regexp: &str, text: &str) -> bool {
+        if regexp.starts_with('^') {
+            self.match_here(&regexp[1..], text)
         } else {
-            let (token, rest) = self.remaining.split_at(1);
-            self.remaining = rest;
-            Some(token)
-        }
-    }
-}
-
-fn match_patt(input_line: &str, pattern: &str) -> bool {
-    let mut iterator = CustomIterator::new(pattern);
-
-    if pattern.contains("?") {
-        let parts: Vec<&str> = pattern.split("?").collect();
-        let first_part = parts.first().expect("Somethign wrong");
-        let max_len = parts.len().saturating_sub(1);
-        let pattern_remain = parts.last().expect("Somethigh");
-        let actual_remain = &input_line[parts.get(0).expect("nothing").len()..];
-
-        if input_line.contains(first_part) || input_line.contains(&first_part[..max_len]) {
-            if actual_remain == *pattern_remain {
-                return true;
-            } else {
-                return false;
-            }
+            text.char_indices()
+                .any(|(i, _)| self.match_here(regexp, &text[i..]))
         }
     }
 
-    let first_value = iterator.nth(0).unwrap_or("");
-
-    if first_value == "[" {
-        let pattern_to_match = pattern.trim_start_matches("[").trim_end_matches("]");
-
-        if pattern_to_match.contains("^") {
-            let rest = &pattern_to_match[1..];
-            return !rest.chars().any(|letter| input_line.contains(letter));
+    fn match_here(&self, regexp: &str, text: &str) -> bool {
+        if regexp.is_empty() {
+            return true;
+        }
+        if regexp.len() > 1 && regexp.chars().nth(1) == Some('*') {
+            self.match_star(regexp.chars().next().unwrap(), &regexp[2..], text)
+        } else if regexp.starts_with('$') && regexp.len() == 1 {
+            text.is_empty()
+        } else if !text.is_empty()
+            && (regexp.starts_with('.') || regexp.starts_with(text.chars().next().unwrap()))
+        {
+            self.match_here(&regexp[1..], &text[1..])
         } else {
-            return pattern_to_match
-                .chars()
-                .any(|letter| input_line.contains(letter));
-        }
-    } else if first_value == "^" {
-        let rest = &pattern[1..];
-        let input_chars: Vec<char> = input_line.chars().collect();
-
-        for (idx, letter) in rest.char_indices() {
-            if idx >= input_chars.len() || letter != input_chars[idx] {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    for (idx, letter) in input_line.char_indices() {
-        if match_word_patt(first_value, letter) {
-            let new_iterator: Vec<_> = CustomIterator::new(pattern).collect();
-            let mut is_match: bool = true;
-            let remain_count = input_line.chars().skip(idx).count();
-
-            if remain_count < new_iterator.len()
-                && *new_iterator.last().unwrap() != "$"
-                && !pattern.contains("+")
-                && !pattern.contains("?")
-                && !pattern.contains("|")
-            {
-                return false;
-            }
-
-            for (symbol, (index, letter)) in zip(new_iterator, input_line.char_indices().skip(idx))
-            {
-                if symbol == "+" {
-                    break;
-                }
-                if symbol == "(" && pattern.contains("|") {
-                    let values: &str = pattern.split("(").last().unwrap();
-
-                    let new_values: Vec<&str> = values.trim_end_matches(")").split("|").collect();
-
-                    let first: &str = new_values.first().expect("haha");
-                    let last: &str = new_values.last().expect("uhasa");
-
-                    let test: &str = &input_line[index..];
-
-                    if test.contains(first) || test.contains(last) {
-                        return true;
-                    } else {
-                        return false;
-                    }
-                }
-
-                if match_word_patt(symbol, letter) {
-                    continue;
-                } else {
-                    is_match = false;
-                    break;
-                }
-            }
-            if is_match {
-                return true;
-            }
+            false
         }
     }
 
-    false
-}
-
-fn match_word_patt(pattern: &str, letter: char) -> bool {
-    if pattern == "." {
-        true
-    } else if pattern.starts_with(r"\d") {
-        return letter.is_numeric();
-    } else if pattern.starts_with(r"\w") {
-        return letter.is_alphabetic();
-    } else if pattern == letter.to_string().as_str() {
-        return true;
-    } else if pattern == "(" {
-        return true;
-    } else {
-        false
+    fn match_star(&self, c: char, regexp: &str, text: &str) -> bool {
+        text.char_indices()
+            .any(|(i, ch)| (c == '.' || c == ch) && self.match_here(regexp, &text[i + 1..]))
+            || self.match_here(regexp, text)
     }
 }
 
 fn main() {
-    if env::args().nth(1).unwrap() != "-E" {
-        println!("Expected first argument to be '-E'");
+    let args: Vec<String> = env::args().collect();
+    if args.len() != 3 || args[1] != "-E" {
+        eprintln!("Usage: {} -E <pattern>", args[0]);
         process::exit(1);
     }
-
     let pattern = env::args().nth(2).unwrap();
     let mut input_line = String::new();
 
     io::stdin().read_line(&mut input_line).unwrap();
 
-    println!("Input line: {}", input_line);
-    println!("Pattern: {}", pattern);
-    if match_patt(&input_line, &pattern) {
-        println!("Exit 0");
-        process::exit(0)
-    } else {
-        println!("Exit 1");
-        process::exit(1)
+    let regex = Regex::new(pattern.as_str());
+    println!("Pattern: {}", regex.pattern);
+    println!("Text: {}", input_line);
+    println!("Match: {}", regex.is_match(input_line.as_str()));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_simple_match() {
+        let regex = Regex::new("abc");
+        assert!(regex.is_match("abc"));
+        assert!(regex.is_match("xabcy"));
+        assert!(!regex.is_match("ac"));
+    }
+
+    #[test]
+    fn test_start_anchor() {
+        let regex = Regex::new("^abc");
+        assert!(regex.is_match("abcdef"));
+        assert!(!regex.is_match("xabcdef"));
+    }
+
+    #[test]
+    fn test_end_anchor() {
+        let regex = Regex::new("abc$");
+        assert!(regex.is_match("xabc"));
+        assert!(!regex.is_match("abcx"));
+    }
+
+    #[test]
+    fn test_star() {
+        let regex = Regex::new("a*b");
+        assert!(regex.is_match("b"));
+        assert!(regex.is_match("ab"));
+        assert!(regex.is_match("aaab"));
+        assert!(!regex.is_match("a"));
+    }
+
+    #[test]
+    fn test_dot() {
+        let regex = Regex::new("a.c");
+        assert!(regex.is_match("abc"));
+        assert!(regex.is_match("axc"));
+        assert!(!regex.is_match("ac"));
     }
 }
